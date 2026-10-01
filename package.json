@@ -1,0 +1,21 @@
+{
+  "name": "tad-inference-frontend",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "predev": "node scripts/generate-manifest.mjs",
+    "dev": "vite",
+    "build": "node scripts/generate-manifest.mjs && vite build",
+    "preview": "vite preview",
+    "generate-manifest": "node scripts/generate-manifest.mjs"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^6.1.0"
+  }
+}
