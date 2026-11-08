@@ -10,15 +10,19 @@ A clean, modern, light-themed web frontend for **Temporal Action Detection (TAD)
 - **On-Demand Loading**: Videos are never preloaded on startup. A video is only loaded when selected or uploaded, ensuring fast initial page loads.
 - **Custom Video Upload**: Drag-and-drop or file selector supporting `.mp4`, `.avi`, `.mov`, and `.webm` formats using `URL.createObjectURL`.
 - **Inference Parameter Controls**:
-  - **Two Model Variants with Automatic Path Generation**:
-    - **Model with Negatives**: `exps/custom/tridet_videomaev2_1class_neg/gpu1_id0/checkpoint/epoch_<number>.pth` *(Best: Epoch 14, or Epoch 17)*
-    - **Only Positives**: `exps/custom/tridet_videomaev2_1class/gpu1_id0/checkpoint/epoch_<number>.pth` *(Best: Epoch 37)*
-  - **Epoch Number Input & Quick Presets**: Enter any target epoch number with one-click recommendation presets (`Epoch 14 (Best)`, `Epoch 17`, `Epoch 37 (Best)`).
+  - **Positives Model Checkpoint Management**:
+    - **Standard Epoch Mode**: Enter any target epoch number with one-click recommendation preset (`Epoch 37 (Best)`). Automatically constructs `exps/custom/tridet_videomaev2_1class/gpu1_id0/checkpoint/epoch_<number>.pth`.
+    - **Custom Model Checkpoint Path**: Switch to custom mode to supply any arbitrary `.pth` checkpoint path directly into the input field.
   - Confidence threshold slider and number input (`0.01` – `1.00`)
   - NMS Type toggle (`hard` vs `soft`)
   - Conditional IoU threshold slider (`hard` NMS) and Sigma parameter (`soft` NMS)
   - Max segments limit selector
   - Informational `(?)` tooltips for each parameter
+- **Full Inference & Video Library Separation**:
+  - **Full Inference (All Videos)**: One-click sequential execution across all server videos with a live batch progress bar, elapsed time tracker, and stop button.
+  - **Categorized Video Library**: Filter videos instantly by `All`, `🚨 Detections`, `✓ Clean`, and `Pending`.
+  - **Video Card Status Badges**: Real-time tags displaying number of detected segments and peak confidence score (e.g. `🚨 3 detections (0.94)` vs `✓ Clean (0 events)`).
+  - **Persistent Storage**: Cached in `localStorage` for instant review upon selecting any video without requiring re-computation.
 - **Real-Time Dumping Detection HUD**:
   - Dynamically triggers a **3px solid red border** (`#ef4444`) around the video container whenever playback enters a detected dumping action window.
   - Displays a high-contrast alert badge in the top-right corner showing the raw score: `Dumping detected: <score>` (e.g. `0.94`).

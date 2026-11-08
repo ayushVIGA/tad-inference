@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import ControlsHeader from './components/ControlsHeader';
 import Sidebar from './components/Sidebar';
-import ParameterPanel from './components/ParameterPanel';
+import ParameterPanel, { getPositivesCheckpointPath } from './components/ParameterPanel';
 import VideoPlayer from './components/VideoPlayer';
 import PredictionsTable from './components/PredictionsTable';
 import { AlertCircleIcon, CheckCircleIcon } from './components/Icons';
@@ -13,9 +13,8 @@ const DEFAULT_CHECKPOINT = import.meta.env.VITE_DEFAULT_CHECKPOINT || 'exps/cust
 const DEFAULT_THRESHOLD = parseFloat(import.meta.env.VITE_DEFAULT_THRESHOLD) || 0.15;
 const DEFAULT_IOU_THRESHOLD = parseFloat(import.meta.env.VITE_DEFAULT_IOU_THRESHOLD) || 0.25;
 
-const initialModelType = 'positives';
 const initialEpoch = 37;
-const initialCheckpoint = import.meta.env.VITE_DEFAULT_CHECKPOINT || 'exps/custom/tridet_videomaev2_1class/gpu1_id0/checkpoint/epoch_37.pth';
+const initialCheckpoint = DEFAULT_CHECKPOINT;
 
 export default function App() {
   // Stored video manifests
@@ -29,20 +28,36 @@ export default function App() {
   // Sidebar Collapse state
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
 
-  // Predictions and detection state
+  // Predictions and detection state for currently active video
   const [predictions, setPredictions] = useState([]);
   const [toastMessage, setToastMessage] = useState(null);
 
-  // Loading & Request State
+  // Stored batch predictions per video filename: { [filename]: { status, predictions, count, maxScore, timestamp } }
+  const [batchResults, setBatchResults] = useState(() => {
+    try {
+      const saved = localStorage.getItem('tad_batch_results_v1');
+      return saved ? JSON.parse(saved) : {};
+    } catch {
+      return {};
+    }
+  });
+
+  // Single Video Loading & Request State
   const [isLoading, setIsLoading] = useState(false);
   const [loadingTime, setLoadingTime] = useState(0);
   const abortControllerRef = useRef(null);
   const timerIntervalRef = useRef(null);
 
-  // Parameter Configuration State (Only Positives selected by default)
+  // Batch / Full Inference State
+  const [isBatchRunning, setIsBatchRunning] = useState(false);
+  const [batchProgress, setBatchProgress] = useState({ currentIdx: 0, total: 0, currentVideo: '', cancelled: false });
+  const batchAbortRef = useRef(null);
+
+  // Parameter Configuration State (Positives model with Epoch or Custom Checkpoint)
   const [params, setParams] = useState({
-    model_type: initialModelType, // 'positives' | 'negatives'
+    checkpoint_mode: 'epoch', // 'epoch' | 'custom'
     epoch: initialEpoch,
+    custom_checkpoint: '',
     checkpoint: initialCheckpoint,
     threshold: DEFAULT_THRESHOLD,
     nms_type: 'hard', // 'hard' | 'soft'
@@ -60,7 +75,6 @@ export default function App() {
       })
       .then((data) => {
         setVideoManifest(data);
-        // Do not auto-load or pre-buffer video files on initial page load
       })
       .catch((err) => {
         console.warn('Could not load manifest.json:', err);
@@ -86,15 +100,26 @@ export default function App() {
 
   // Handler: Selecting a stored video
   const handleSelectPreStored = (videoItem) => {
-    // Loads and plays the video only when selected
     if (videoSrc && videoSrc.startsWith('blob:')) {
       URL.revokeObjectURL(videoSrc);
     }
     setActiveVideo(videoItem);
     setVideoSrc(`/videos/${videoItem.filename}`);
     setMode('pre-stored');
-    setPredictions([]);
-    showToast(`Loaded video: ${videoItem.title || videoItem.filename}`, 'info', 3000);
+
+    // Retrieve cached predictions if available
+    const cached = batchResults[videoItem.filename];
+    if (cached && Array.isArray(cached.predictions)) {
+      setPredictions(cached.predictions);
+      if (cached.predictions.length > 0) {
+        showToast(`Loaded ${videoItem.title}: Found ${cached.predictions.length} stored action segment(s).`, 'success', 3000);
+      } else {
+        showToast(`Loaded ${videoItem.title}: No dumping actions detected (clean).`, 'info', 3000);
+      }
+    } else {
+      setPredictions([]);
+      showToast(`Loaded video: ${videoItem.title || videoItem.filename}`, 'info', 3000);
+    }
   };
 
   // Handler: Uploading a video
@@ -132,7 +157,7 @@ export default function App() {
       .slice(0, params.max_seg_num);
   };
 
-  // Cancel ongoing request
+  // Cancel ongoing single request
   const handleCancelRequest = () => {
     if (abortControllerRef.current) {
       abortControllerRef.current.abort();
@@ -143,10 +168,14 @@ export default function App() {
     showToast('Prediction request cancelled', 'info');
   };
 
-  // Handler: Run Prediction
+  // Handler: Run Single Video Prediction
   const handlePredict = async () => {
     if (!activeVideo) {
       showToast('Please select or upload a video before running prediction.', 'error');
+      return;
+    }
+    if (isBatchRunning) {
+      showToast('Full inference is currently running. Please wait or stop batch.', 'info');
       return;
     }
 
@@ -159,7 +188,6 @@ export default function App() {
     const abortController = new AbortController();
     abortControllerRef.current = abortController;
 
-    // Timeout of 300,000ms (5 minutes)
     const timeoutId = setTimeout(() => {
       abortController.abort('Request timed out after 5 minutes');
     }, 300000);
@@ -168,8 +196,6 @@ export default function App() {
       let response;
 
       if (mode === 'pre-stored') {
-        // Request: POST /api/predict
-        // Headers: Content-Type: application/json
         const payload = {
           video_name: activeVideo.filename,
           checkpoint: params.checkpoint,
@@ -191,10 +217,8 @@ export default function App() {
           signal: abortController.signal,
         });
       } else {
-        // Uploaded Video: FormData
-        // Append fields: video, checkpoint, threshold, nms_type, iou_threshold, max_seg_num
         const formData = new FormData();
-        formData.append('video', activeVideo); // File object
+        formData.append('video', activeVideo);
         formData.append('checkpoint', params.checkpoint);
         formData.append('threshold', String(params.threshold));
         formData.append('nms_type', params.nms_type);
@@ -221,6 +245,29 @@ export default function App() {
       const rawList = data.predictions || data.results || (Array.isArray(data) ? data : []);
       const normalized = normalizePredictions(rawList);
       setPredictions(normalized);
+
+      // Record in batchResults so sidebar reflects status immediately
+      if (mode === 'pre-stored' && activeVideo?.filename) {
+        setBatchResults((prev) => {
+          const updated = {
+            ...prev,
+            [activeVideo.filename]: {
+              status: 'completed',
+              predictions: normalized,
+              count: normalized.length,
+              maxScore: normalized.length > 0 ? Math.max(...normalized.map((p) => p.score)) : 0,
+              timestamp: Date.now(),
+            },
+          };
+          try {
+            localStorage.setItem('tad_batch_results_v1', JSON.stringify(updated));
+          } catch (e) {
+            console.warn('localStorage save failed:', e);
+          }
+          return updated;
+        });
+      }
+
       showToast(`Prediction complete: Found ${normalized.length} action segment(s).`, 'success');
 
     } catch (err) {
@@ -237,6 +284,155 @@ export default function App() {
       setLoadingTime(0);
       abortControllerRef.current = null;
     }
+  };
+
+  // Handler: Cancel Full Inference Batch
+  const handleCancelBatch = () => {
+    if (batchAbortRef.current) {
+      batchAbortRef.current.abort();
+    }
+    setIsBatchRunning(false);
+    showToast('Full inference batch stopped.', 'info');
+  };
+
+  // Handler: Run Full Inference on all server videos
+  const handleFullInference = async () => {
+    if (!videoManifest || videoManifest.length === 0) {
+      showToast('No server videos found in repository to run inference on.', 'error');
+      return;
+    }
+    if (isLoading || isBatchRunning) {
+      showToast('Another inference task is currently running.', 'info');
+      return;
+    }
+
+    setIsBatchRunning(true);
+    const total = videoManifest.length;
+    let completedCount = 0;
+    let detectionsCount = 0;
+    let errorCount = 0;
+
+    const abortController = new AbortController();
+    batchAbortRef.current = abortController;
+
+    showToast(`Starting Full Inference for all ${total} videos...`, 'info', 3000);
+
+    for (let i = 0; i < total; i++) {
+      if (abortController.signal.aborted) {
+        break;
+      }
+      const videoItem = videoManifest[i];
+      setBatchProgress({
+        currentIdx: i + 1,
+        total,
+        currentVideo: videoItem.filename,
+        cancelled: false,
+      });
+
+      try {
+        const payload = {
+          video_name: videoItem.filename,
+          checkpoint: params.checkpoint,
+          threshold: Number(params.threshold),
+          nms_type: params.nms_type,
+          iou_threshold: Number(params.iou_threshold),
+          max_seg_num: Number(params.max_seg_num),
+        };
+        if (params.nms_type === 'soft') {
+          payload.sigma = Number(params.sigma);
+        }
+
+        const res = await fetch('/api/predict', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+          signal: abortController.signal,
+        });
+
+        if (!res.ok) {
+          const errText = await res.text();
+          throw new Error(`HTTP ${res.status}: ${errText}`);
+        }
+
+        const data = await res.json();
+        const rawList = data.predictions || data.results || (Array.isArray(data) ? data : []);
+        const normalized = normalizePredictions(rawList);
+
+        completedCount++;
+        if (normalized.length > 0) detectionsCount++;
+
+        // Store result
+        setBatchResults((prev) => {
+          const updated = {
+            ...prev,
+            [videoItem.filename]: {
+              status: 'completed',
+              predictions: normalized,
+              count: normalized.length,
+              maxScore: normalized.length > 0 ? Math.max(...normalized.map((p) => p.score)) : 0,
+              timestamp: Date.now(),
+            },
+          };
+          try {
+            localStorage.setItem('tad_batch_results_v1', JSON.stringify(updated));
+          } catch (e) {
+            console.warn('localStorage save failed:', e);
+          }
+          return updated;
+        });
+
+        // If the active video in player matches, update its view in real time
+        if (mode === 'pre-stored' && activeVideo?.filename === videoItem.filename) {
+          setPredictions(normalized);
+        }
+
+      } catch (err) {
+        if (err.name === 'AbortError' || abortController.signal.aborted) {
+          break;
+        }
+        console.error(`Inference failed for ${videoItem.filename}:`, err);
+        errorCount++;
+        setBatchResults((prev) => {
+          const updated = {
+            ...prev,
+            [videoItem.filename]: {
+              status: 'error',
+              error: err.message,
+              predictions: [],
+              count: 0,
+              maxScore: 0,
+              timestamp: Date.now(),
+            },
+          };
+          try {
+            localStorage.setItem('tad_batch_results_v1', JSON.stringify(updated));
+          } catch (e) {}
+          return updated;
+        });
+      }
+    }
+
+    setIsBatchRunning(false);
+    batchAbortRef.current = null;
+    setBatchProgress({ currentIdx: 0, total: 0, currentVideo: '', cancelled: false });
+
+    if (!abortController.signal.aborted) {
+      showToast(
+        `Full Inference Complete: ${completedCount}/${total} videos analyzed. ${detectionsCount} flagged with dumping${errorCount > 0 ? `, ${errorCount} errors` : ''}.`,
+        'success',
+        6000
+      );
+    }
+  };
+
+  // Handler: Clear all stored results
+  const handleClearBatchResults = () => {
+    setBatchResults({});
+    try {
+      localStorage.removeItem('tad_batch_results_v1');
+    } catch {}
+    setPredictions([]);
+    showToast('Cleared all cached prediction results.', 'info');
   };
 
   return (
@@ -259,6 +455,8 @@ export default function App() {
           onUploadVideo={handleUploadVideo}
           isCollapsed={isSidebarCollapsed}
           onToggleCollapse={() => setIsSidebarCollapsed(!isSidebarCollapsed)}
+          batchResults={batchResults}
+          onClearBatchResults={handleClearBatchResults}
         />
 
         {/* Center/Right Content Area */}
@@ -290,6 +488,11 @@ export default function App() {
             isLoading={isLoading}
             loadingTime={loadingTime}
             onCancelRequest={handleCancelRequest}
+            onFullInference={handleFullInference}
+            isBatchRunning={isBatchRunning}
+            batchProgress={batchProgress}
+            onCancelBatch={handleCancelBatch}
+            totalVideos={videoManifest.length}
           />
 
           {/* Main Video Viewport & Timeline */}

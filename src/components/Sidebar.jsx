@@ -1,5 +1,15 @@
-import React, { useRef, useState } from 'react';
-import { FilmIcon, UploadIcon, ChevronLeftIcon, ChevronRightIcon, VideoCameraIcon, SearchIcon, XIcon } from './Icons';
+import React, { useRef, useState, useMemo } from 'react';
+import {
+  FilmIcon,
+  UploadIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  VideoCameraIcon,
+  SearchIcon,
+  XIcon,
+  FilterIcon,
+  TrashIcon,
+} from './Icons';
 
 export default function Sidebar({
   videos = [],
@@ -8,16 +18,18 @@ export default function Sidebar({
   onSelectPreStored,
   onUploadVideo,
   isCollapsed,
-  onToggleCollapse
+  onToggleCollapse,
+  batchResults = {},
+  onClearBatchResults,
 }) {
   const fileInputRef = useRef(null);
   const [searchQuery, setSearchQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState('all'); // 'all' | 'detections' | 'clean' | 'unprocessed'
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0];
     if (file) {
       onUploadVideo(file);
-      // Reset input so same file can be selected again if desired
       e.target.value = '';
     }
   };
@@ -36,15 +48,51 @@ export default function Sidebar({
     }
   };
 
-  // Filter videos matching query in real time
-  const filteredVideos = videos.filter((item) => {
-    if (!searchQuery.trim()) return true;
-    const q = searchQuery.toLowerCase().trim();
-    const title = (item.title || '').toLowerCase();
-    const filename = (item.filename || '').toLowerCase();
-    const desc = (item.description || '').toLowerCase();
-    return title.includes(q) || filename.includes(q) || desc.includes(q);
-  });
+  // Compute summary stats across all server videos
+  const stats = useMemo(() => {
+    let detections = 0;
+    let clean = 0;
+    let unprocessed = 0;
+
+    videos.forEach((v) => {
+      const res = batchResults[v.filename];
+      if (!res || res.status === 'pending') {
+        unprocessed++;
+      } else if (res.status === 'completed') {
+        if (res.count > 0 || (Array.isArray(res.predictions) && res.predictions.length > 0)) {
+          detections++;
+        } else {
+          clean++;
+        }
+      } else {
+        unprocessed++;
+      }
+    });
+
+    const analyzed = detections + clean;
+    return { all: videos.length, detections, clean, unprocessed, analyzed };
+  }, [videos, batchResults]);
+
+  // Filter videos matching both category and search query
+  const filteredVideos = useMemo(() => {
+    return videos.filter((item) => {
+      const res = batchResults[item.filename];
+      const isCompleted = res && res.status === 'completed';
+      const hasDetections = isCompleted && (res.count > 0 || res.predictions?.length > 0);
+      const isClean = isCompleted && (!res.count || res.count === 0);
+
+      if (categoryFilter === 'detections' && !hasDetections) return false;
+      if (categoryFilter === 'clean' && !isClean) return false;
+      if (categoryFilter === 'unprocessed' && isCompleted) return false;
+
+      if (!searchQuery.trim()) return true;
+      const q = searchQuery.toLowerCase().trim();
+      const title = (item.title || '').toLowerCase();
+      const filename = (item.filename || '').toLowerCase();
+      const desc = (item.description || '').toLowerCase();
+      return title.includes(q) || filename.includes(q) || desc.includes(q);
+    });
+  }, [videos, batchResults, categoryFilter, searchQuery]);
 
   return (
     <aside className={`app-sidebar ${isCollapsed ? 'collapsed' : ''}`}>
@@ -59,8 +107,8 @@ export default function Sidebar({
           type="button"
           onClick={onToggleCollapse}
           className="sidebar-toggle-btn"
-          title={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-          aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         >
           {isCollapsed ? <ChevronRightIcon /> : <ChevronLeftIcon />}
         </button>
@@ -69,7 +117,7 @@ export default function Sidebar({
       {!isCollapsed ? (
         <div className="sidebar-content">
           {/* Upload Dropzone / Button */}
-          <div 
+          <div
             className={`upload-dropzone ${mode === 'upload' ? 'dropzone-active' : ''}`}
             onDragOver={handleDragOver}
             onDrop={handleDrop}
@@ -114,7 +162,9 @@ export default function Sidebar({
             <div className="section-label-row">
               <span className="section-label">Server Videos</span>
               <span className="section-count">
-                {searchQuery.trim() ? `${filteredVideos.length} of ${videos.length}` : `${videos.length} videos`}
+                {stats.analyzed > 0
+                  ? `${stats.analyzed}/${videos.length} analyzed`
+                  : `${videos.length} videos`}
               </span>
             </div>
 
@@ -141,31 +191,139 @@ export default function Sidebar({
               )}
             </div>
 
+            {/* Category Filter Pills (All / Detections / Clean / Pending) */}
+            <div className="category-filter-bar">
+              <button
+                type="button"
+                className={`category-pill ${categoryFilter === 'all' ? 'active' : ''}`}
+                onClick={() => setCategoryFilter('all')}
+              >
+                All ({stats.all})
+              </button>
+              <button
+                type="button"
+                className={`category-pill pill-detections ${
+                  categoryFilter === 'detections' ? 'active' : ''
+                } ${stats.detections > 0 ? 'has-items' : ''}`}
+                onClick={() => setCategoryFilter('detections')}
+                title="Videos with detected dumping actions"
+              >
+                🚨 Detections ({stats.detections})
+              </button>
+              <button
+                type="button"
+                className={`category-pill pill-clean ${
+                  categoryFilter === 'clean' ? 'active' : ''
+                } ${stats.clean > 0 ? 'has-items' : ''}`}
+                onClick={() => setCategoryFilter('clean')}
+                title="Videos evaluated with zero detections"
+              >
+                ✓ Clean ({stats.clean})
+              </button>
+              {stats.unprocessed > 0 && stats.analyzed > 0 && (
+                <button
+                  type="button"
+                  className={`category-pill pill-unprocessed ${
+                    categoryFilter === 'unprocessed' ? 'active' : ''
+                  }`}
+                  onClick={() => setCategoryFilter('unprocessed')}
+                  title="Videos not yet analyzed"
+                >
+                  Pending ({stats.unprocessed})
+                </button>
+              )}
+            </div>
+
+            {/* Cache Summary / Reset Action */}
+            {stats.analyzed > 0 && (
+              <div className="cache-info-row">
+                <span className="cache-status-text">
+                  Cached predictions: <strong>{stats.analyzed}</strong> video{stats.analyzed > 1 ? 's' : ''}
+                </span>
+                {onClearBatchResults && (
+                  <button
+                    type="button"
+                    className="clear-cache-btn"
+                    onClick={onClearBatchResults}
+                    title="Clear cached inference results"
+                  >
+                    <TrashIcon size={12} />
+                    Clear
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Video List */}
             <div className="prestored-list">
               {filteredVideos.map((item) => {
                 const isSelected = mode === 'pre-stored' && activeVideo?.filename === item.filename;
+                const res = batchResults[item.filename];
+                const isCompleted = res && res.status === 'completed';
+                const hasDetections = isCompleted && (res.count > 0 || res.predictions?.length > 0);
+                const isClean = isCompleted && (!res.count || res.count === 0);
+                const hasError = res && res.status === 'error';
+
                 return (
                   <button
                     key={item.id || item.filename}
                     type="button"
-                    className={`video-item-card ${isSelected ? 'selected' : ''}`}
+                    className={`video-item-card ${isSelected ? 'selected' : ''} ${
+                      hasDetections ? 'item-has-detections' : ''
+                    }`}
                     onClick={() => onSelectPreStored(item)}
                   >
-                    <div className="video-thumb-icon">
+                    <div
+                      className={`video-thumb-icon ${
+                        hasDetections
+                          ? 'thumb-detected'
+                          : isClean
+                          ? 'thumb-clean'
+                          : ''
+                      }`}
+                    >
                       <FilmIcon className="thumb-film-icon" />
                       {item.duration_sec && (
                         <span className="thumb-duration">{item.duration_sec}s</span>
                       )}
                     </div>
                     <div className="video-item-info">
-                      <div className="video-item-title" title={item.title || item.filename}>
-                        {item.title || item.filename}
+                      <div className="video-item-title-row">
+                        <span className="video-item-title" title={item.title || item.filename}>
+                          {item.title || item.filename}
+                        </span>
                       </div>
                       <div className="video-item-filename">{item.filename}</div>
-                      {item.description && (
-                        <div className="video-item-desc">{item.description}</div>
-                      )}
+
+                      {/* Prediction Status Badge */}
+                      <div className="video-status-badge-row">
+                        {hasDetections && (
+                          <span
+                            className="video-status-badge badge-detected"
+                            title={`${res.count} dumping segment(s) detected`}
+                          >
+                            🚨 {res.count} detection{res.count > 1 ? 's' : ''} ({Number(res.maxScore).toFixed(2)})
+                          </span>
+                        )}
+                        {isClean && (
+                          <span
+                            className="video-status-badge badge-clean"
+                            title="Evaluated: 0 dumping segments"
+                          >
+                            ✓ Clean (0 events)
+                          </span>
+                        )}
+                        {hasError && (
+                          <span
+                            className="video-status-badge badge-error"
+                            title={res.error || 'Prediction failed'}
+                          >
+                            ⚠ Failed
+                          </span>
+                        )}
+                      </div>
                     </div>
+
                     {isSelected && (
                       <div className="selected-indicator" title="Currently Loaded">
                         <span className="indicator-dot"></span>
@@ -177,7 +335,15 @@ export default function Sidebar({
 
               {filteredVideos.length === 0 && (
                 <div className="empty-videos-state">
-                  {searchQuery.trim() ? `No videos match "${searchQuery}"` : "No videos found in library."}
+                  {searchQuery.trim()
+                    ? `No videos match "${searchQuery}"`
+                    : categoryFilter === 'detections'
+                    ? 'No videos with detected dumping yet.'
+                    : categoryFilter === 'clean'
+                    ? 'No clean videos found in this filter.'
+                    : categoryFilter === 'unprocessed'
+                    ? 'All videos have been processed!'
+                    : 'No videos found in library.'}
                 </div>
               )}
             </div>
@@ -204,15 +370,29 @@ export default function Sidebar({
           <div className="collapsed-divider"></div>
           {videos.map((item) => {
             const isSelected = mode === 'pre-stored' && activeVideo?.filename === item.filename;
+            const res = batchResults[item.filename];
+            const hasDetections = res?.status === 'completed' && (res.count > 0 || res.predictions?.length > 0);
+            const isClean = res?.status === 'completed' && (!res.count || res.count === 0);
+
             return (
               <button
                 key={item.id || item.filename}
                 type="button"
-                className={`collapsed-video-btn ${isSelected ? 'selected' : ''}`}
-                title={item.title || item.filename}
+                className={`collapsed-video-btn ${isSelected ? 'selected' : ''} ${
+                  hasDetections ? 'collapsed-detected' : ''
+                }`}
+                title={`${item.title || item.filename}${
+                  hasDetections
+                    ? ` • 🚨 ${res.count} detection(s)`
+                    : isClean
+                    ? ' • ✓ Clean'
+                    : ''
+                }`}
                 onClick={() => onSelectPreStored(item)}
               >
                 <FilmIcon />
+                {hasDetections && <span className="collapsed-alert-dot"></span>}
+                {isClean && <span className="collapsed-clean-dot"></span>}
               </button>
             );
           })}

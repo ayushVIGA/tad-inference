@@ -1,13 +1,12 @@
 import React from 'react';
 import Tooltip from './Tooltip';
-import { ZapIcon, RefreshCwIcon, SlidersIcon } from './Icons';
+import { ZapIcon, SlidersIcon, LayersIcon, RefreshCwIcon } from './Icons';
 
-function getCheckpointPath(modelType, epoch) {
-  const epochNum = parseInt(epoch, 10) || 1;
-  if (modelType === 'negatives') {
-    return `exps/custom/tridet_videomaev2_1class_neg/gpu1_id0/checkpoint/epoch_${epochNum}.pth`;
-  }
-  return `exps/custom/tridet_videomaev2_1class/gpu1_id0/checkpoint/epoch_${epochNum}.pth`;
+export const DEFAULT_POSITIVES_PREFIX = 'exps/custom/tridet_videomaev2_1class/gpu1_id0/checkpoint';
+
+export function getPositivesCheckpointPath(epoch) {
+  const epochNum = parseInt(epoch, 10) || 37;
+  return `${DEFAULT_POSITIVES_PREFIX}/epoch_${epochNum}.pth`;
 }
 
 export default function ParameterPanel({
@@ -16,8 +15,15 @@ export default function ParameterPanel({
   onPredict,
   isLoading,
   loadingTime,
-  onCancelRequest
+  onCancelRequest,
+  onFullInference,
+  isBatchRunning,
+  batchProgress,
+  onCancelBatch,
+  totalVideos = 0,
 }) {
+  const isBusy = isLoading || isBatchRunning;
+
   const handleChange = (field, value) => {
     setParams((prev) => ({
       ...prev,
@@ -25,32 +31,52 @@ export default function ParameterPanel({
     }));
   };
 
-  const handleModelTypeSelect = (newType) => {
-    let newEpoch = params.epoch;
-    if (newType === 'negatives' && params.epoch === 37) {
-      newEpoch = 14;
-    } else if (newType === 'positives' && (params.epoch === 14 || params.epoch === 17)) {
-      newEpoch = 37;
-    }
-    const newCheckpoint = getCheckpointPath(newType, newEpoch);
-    setParams((prev) => ({
-      ...prev,
-      model_type: newType,
-      epoch: newEpoch,
-      checkpoint: newCheckpoint,
-    }));
+  const handleCheckpointModeSelect = (mode) => {
+    if (isBusy) return;
+    setParams((prev) => {
+      let newCheckpoint = prev.checkpoint;
+      if (mode === 'epoch') {
+        newCheckpoint = getPositivesCheckpointPath(prev.epoch || 37);
+      } else {
+        newCheckpoint = prev.custom_checkpoint?.trim() || prev.checkpoint;
+      }
+      return {
+        ...prev,
+        checkpoint_mode: mode,
+        checkpoint: newCheckpoint,
+      };
+    });
   };
 
   const handleEpochChange = (epochVal) => {
     const epochNum = parseInt(epochVal, 10);
     const validEpoch = isNaN(epochNum) ? '' : Math.max(1, epochNum);
-    const newCheckpoint = getCheckpointPath(params.model_type || 'positives', validEpoch);
+    const newCheckpoint = getPositivesCheckpointPath(validEpoch);
     setParams((prev) => ({
       ...prev,
       epoch: validEpoch,
       checkpoint: newCheckpoint,
     }));
   };
+
+  const handleCustomPathChange = (customPath) => {
+    setParams((prev) => ({
+      ...prev,
+      custom_checkpoint: customPath,
+      checkpoint: customPath.trim() || getPositivesCheckpointPath(prev.epoch || 37),
+    }));
+  };
+
+  const handleResetDefaultCheckpoint = () => {
+    const defaultPath = getPositivesCheckpointPath(37);
+    setParams((prev) => ({
+      ...prev,
+      custom_checkpoint: defaultPath,
+      checkpoint: defaultPath,
+    }));
+  };
+
+  const currentMode = params.checkpoint_mode || 'epoch';
 
   return (
     <div className="parameter-panel-card">
@@ -62,105 +88,100 @@ export default function ParameterPanel({
       </div>
 
       <div className="parameters-grid">
-        {/* Model Variant & Epoch Generator Card */}
+        {/* Model Architecture & Checkpoint Selection */}
         <div className="checkpoint-generator-card full-span">
           <div className="param-label-row">
-            <span className="param-label">Model Architecture & Epoch</span>
-            <Tooltip content="Choose the model training variant and enter the target training epoch. The checkpoint path is generated automatically." />
+            <span className="param-label">Model Checkpoint Configuration (Positives Model)</span>
+            <Tooltip content="Select checkpoint by epoch number (auto-generates standard path for the positives model) or provide a custom checkpoint path." />
           </div>
 
-          <div className="model-variant-grid">
-            {/* Option 1 (Left): Only Positives */}
-            <div
-              className={`model-option-card ${params.model_type === 'positives' ? 'selected' : ''}`}
-              onClick={() => !isLoading && handleModelTypeSelect('positives')}
+          {/* Mode Switcher Tabs */}
+          <div className="checkpoint-mode-selector">
+            <button
+              type="button"
+              className={`checkpoint-mode-tab ${currentMode === 'epoch' ? 'active' : ''}`}
+              onClick={() => handleCheckpointModeSelect('epoch')}
+              disabled={isBusy}
             >
-              <div className="model-radio-circle">
-                {params.model_type === 'positives' && <span className="radio-inner-dot"></span>}
-              </div>
-              <div className="model-option-content">
-                <div className="model-option-title">Only Positives</div>
-                <div className="model-option-desc">Trained only with dumping videos</div>
-                <div className="model-recommendation-tag">
-                  Best: <strong>Epoch 37</strong>
-                </div>
-              </div>
-            </div>
-
-            {/* Option 2 (Right): Model with Negatives */}
-            <div
-              className={`model-option-card ${params.model_type === 'negatives' ? 'selected' : ''}`}
-              onClick={() => !isLoading && handleModelTypeSelect('negatives')}
+              <span className="mode-tab-dot"></span>
+              Standard Epoch (Positives)
+            </button>
+            <button
+              type="button"
+              className={`checkpoint-mode-tab ${currentMode === 'custom' ? 'active' : ''}`}
+              onClick={() => handleCheckpointModeSelect('custom')}
+              disabled={isBusy}
             >
-              <div className="model-radio-circle">
-                {params.model_type === 'negatives' && <span className="radio-inner-dot"></span>}
-              </div>
-              <div className="model-option-content">
-                <div className="model-option-title">Model with Negatives</div>
-                <div className="model-option-desc">Trained with more negative samples</div>
-                <div className="model-recommendation-tag">
-                  Best: <strong>Epoch 14</strong> (or <strong>17</strong>)
-                </div>
-              </div>
-            </div>
+              <span className="mode-tab-dot"></span>
+              Custom Model Checkpoint Path
+            </button>
           </div>
 
-          {/* Epoch Input and Preset Buttons */}
-          <div className="epoch-control-row">
-            <div className="epoch-input-group">
-              <label htmlFor="epoch-input" className="epoch-input-label">
-                Target Epoch:
-              </label>
-              <input
-                id="epoch-input"
-                type="number"
-                min="1"
-                max="200"
-                className="epoch-number-input"
-                value={params.epoch}
-                onChange={(e) => handleEpochChange(e.target.value)}
-                disabled={isLoading}
-              />
-            </div>
+          {/* Content based on Mode */}
+          {currentMode === 'epoch' ? (
+            /* Epoch Input and Preset Buttons */
+            <div className="epoch-control-row">
+              <div className="epoch-input-group">
+                <label htmlFor="epoch-input" className="epoch-input-label">
+                  Target Epoch:
+                </label>
+                <input
+                  id="epoch-input"
+                  type="number"
+                  min="1"
+                  max="200"
+                  className="epoch-number-input"
+                  value={params.epoch}
+                  onChange={(e) => handleEpochChange(e.target.value)}
+                  disabled={isBusy}
+                />
+              </div>
 
-            {/* Quick Epoch Buttons based on selected model */}
-            <div className="epoch-presets-group">
-              <span className="presets-label">Recommended:</span>
-              {params.model_type === 'negatives' ? (
-                <>
-                  <button
-                    type="button"
-                    className={`epoch-preset-btn ${params.epoch === 14 ? 'active' : ''}`}
-                    onClick={() => handleEpochChange(14)}
-                    disabled={isLoading}
-                  >
-                    Epoch 14 (Best)
-                  </button>
-                  <button
-                    type="button"
-                    className={`epoch-preset-btn ${params.epoch === 17 ? 'active' : ''}`}
-                    onClick={() => handleEpochChange(17)}
-                    disabled={isLoading}
-                  >
-                    Epoch 17
-                  </button>
-                </>
-              ) : (
+              <div className="epoch-presets-group">
+                <span className="presets-label">Preset:</span>
                 <button
                   type="button"
                   className={`epoch-preset-btn ${params.epoch === 37 ? 'active' : ''}`}
                   onClick={() => handleEpochChange(37)}
-                  disabled={isLoading}
+                  disabled={isBusy}
                 >
                   Epoch 37 (Best)
                 </button>
-              )}
+              </div>
             </div>
-          </div>
+          ) : (
+            /* Custom Model Path Input */
+            <div className="custom-checkpoint-row">
+              <div className="custom-input-wrapper">
+                <label htmlFor="custom-checkpoint-input" className="custom-input-label">
+                  Custom Model Path:
+                </label>
+                <input
+                  id="custom-checkpoint-input"
+                  type="text"
+                  className="custom-checkpoint-input"
+                  placeholder="e.g. exps/custom/tridet_videomaev2_1class/gpu1_id0/checkpoint/epoch_37.pth"
+                  value={params.custom_checkpoint ?? ''}
+                  onChange={(e) => handleCustomPathChange(e.target.value)}
+                  disabled={isBusy}
+                />
+                <button
+                  type="button"
+                  className="custom-reset-btn"
+                  title="Fill with default Epoch 37 path"
+                  onClick={handleResetDefaultCheckpoint}
+                  disabled={isBusy}
+                >
+                  <RefreshCwIcon size={12} />
+                  Default
+                </button>
+              </div>
+            </div>
+          )}
 
-          {/* Generated Checkpoint Path Preview Box */}
+          {/* Active Checkpoint Path Preview Box */}
           <div className="checkpoint-path-preview">
-            <span className="preview-label">Generated Checkpoint Path:</span>
+            <span className="preview-label">Active Checkpoint Path:</span>
             <code className="preview-path" title={params.checkpoint}>
               {params.checkpoint}
             </code>
@@ -185,7 +206,7 @@ export default function ParameterPanel({
               step="0.01"
               value={params.threshold}
               onChange={(e) => handleChange('threshold', parseFloat(e.target.value))}
-              disabled={isLoading}
+              disabled={isBusy}
               className="param-range-slider"
             />
             <input
@@ -198,7 +219,7 @@ export default function ParameterPanel({
                 const val = parseFloat(e.target.value);
                 if (!isNaN(val)) handleChange('threshold', Math.min(1.0, Math.max(0.01, val)));
               }}
-              disabled={isLoading}
+              disabled={isBusy}
               className="param-number-mini"
             />
           </div>
@@ -215,7 +236,7 @@ export default function ParameterPanel({
               type="button"
               className={`nms-btn ${params.nms_type === 'hard' ? 'active' : ''}`}
               onClick={() => handleChange('nms_type', 'hard')}
-              disabled={isLoading}
+              disabled={isBusy}
             >
               Hard NMS
             </button>
@@ -223,7 +244,7 @@ export default function ParameterPanel({
               type="button"
               className={`nms-btn ${params.nms_type === 'soft' ? 'active' : ''}`}
               onClick={() => handleChange('nms_type', 'soft')}
-              disabled={isLoading}
+              disabled={isBusy}
             >
               Soft NMS
             </button>
@@ -249,7 +270,7 @@ export default function ParameterPanel({
                 step="0.01"
                 value={params.iou_threshold}
                 onChange={(e) => handleChange('iou_threshold', parseFloat(e.target.value))}
-                disabled={isLoading}
+                disabled={isBusy}
                 className="param-range-slider"
               />
               <input
@@ -262,7 +283,7 @@ export default function ParameterPanel({
                   const val = parseFloat(e.target.value);
                   if (!isNaN(val)) handleChange('iou_threshold', Math.min(0.95, Math.max(0.05, val)));
                 }}
-                disabled={isLoading}
+                disabled={isBusy}
                 className="param-number-mini"
               />
             </div>
@@ -290,7 +311,7 @@ export default function ParameterPanel({
                 const val = parseFloat(e.target.value);
                 if (!isNaN(val)) handleChange('sigma', val);
               }}
-              disabled={isLoading}
+              disabled={isBusy}
             />
           </div>
         )}
@@ -314,7 +335,7 @@ export default function ParameterPanel({
               const val = parseInt(e.target.value, 10);
               if (!isNaN(val)) handleChange('max_seg_num', Math.max(1, val));
             }}
-            disabled={isLoading}
+            disabled={isBusy}
           />
         </div>
 
@@ -324,7 +345,7 @@ export default function ParameterPanel({
             <div className="loading-state-box">
               <div className="loading-spinner"></div>
               <div className="loading-info">
-                <span className="loading-text">Extracting TAD Features & Detecting...</span>
+                <span className="loading-text">Predicting Current Video...</span>
                 <span className="loading-timer">{loadingTime}s elapsed</span>
               </div>
               <button
@@ -336,16 +357,64 @@ export default function ParameterPanel({
                 Cancel
               </button>
             </div>
+          ) : isBatchRunning ? (
+            <div className="loading-state-box batch-loading-box">
+              <div className="loading-spinner"></div>
+              <div className="loading-info">
+                <span className="loading-text">
+                  Full Inference: {batchProgress?.currentIdx || 0} / {batchProgress?.total || totalVideos}
+                </span>
+                <span className="loading-timer" title={batchProgress?.currentVideo || ''}>
+                  {batchProgress?.currentVideo ? `Processing: ${batchProgress.currentVideo}` : 'Starting batch...'}
+                </span>
+                <div className="batch-progress-bar-container">
+                  <div
+                    className="batch-progress-bar-fill"
+                    style={{
+                      width: `${
+                        batchProgress?.total
+                          ? Math.round(((batchProgress.currentIdx || 0) / batchProgress.total) * 100)
+                          : 0
+                      }%`,
+                    }}
+                  ></div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={onCancelBatch}
+                className="cancel-btn"
+                title="Halt full inference batch"
+              >
+                Stop Batch
+              </button>
+            </div>
           ) : (
-            <button
-              type="button"
-              id="btn-predict"
-              className="predict-button"
-              onClick={onPredict}
-            >
-              <ZapIcon className="predict-icon" />
-              <span>Run TAD Prediction</span>
-            </button>
+            <div className="action-buttons-group">
+              <button
+                type="button"
+                id="btn-predict"
+                className="predict-button"
+                onClick={onPredict}
+                title="Run inference for currently selected/uploaded video"
+              >
+                <ZapIcon className="predict-icon" />
+                <span>Run TAD Prediction</span>
+              </button>
+
+              {totalVideos > 0 && (
+                <button
+                  type="button"
+                  id="btn-full-inference"
+                  className="full-inference-button"
+                  onClick={onFullInference}
+                  title={`Run inference for all ${totalVideos} server videos sequentially`}
+                >
+                  <LayersIcon className="full-inference-icon" />
+                  <span>Full Inference ({totalVideos} Videos)</span>
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>
